@@ -3,7 +3,19 @@
   "private": true,
   "type": "module",
   "description": "Subagent spawning extension for the pi coding agent",
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juniorsundar/pi-subagents.git"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
