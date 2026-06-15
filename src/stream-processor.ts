@@ -1,5 +1,5 @@
 import type { ProgressEvent } from "./tail-progress";
-import { cleanDisplayText } from "./activity-feed-tool-formatting";
+import { cleanDisplayText, cleanThinkingText } from "./activity-feed-tool-formatting";
 
 export type StreamResult =
   | { done: true; finalText: string }
@@ -56,7 +56,7 @@ export async function* processStream(
         const delta = stringValue(assistantEvent?.delta);
         if (delta) thinkingBlockSawDelta = true;
         thinkingBuffer += delta;
-        const drained = drainReadableChunks(thinkingBuffer);
+        const drained = drainReadableChunks(thinkingBuffer, { preserveNewlines: true });
         thinkingBuffer = drained.rest;
         for (const thought of drained.chunks) {
           yield {
@@ -72,7 +72,7 @@ export async function* processStream(
         if (!thinkingBlockSawDelta && !thinkingBuffer && content) {
           thinkingBuffer = content;
         }
-        const drained = drainReadableChunks(thinkingBuffer, { force: true });
+        const drained = drainReadableChunks(thinkingBuffer, { force: true, preserveNewlines: true });
         thinkingBuffer = drained.rest;
         for (const thought of drained.chunks) {
           yield {
@@ -166,6 +166,19 @@ export async function* processStream(
         finalText = extractFinalTextFromMessages(parsed.messages);
       }
 
+      // Drain any remaining thinking buffer before completing
+      if (thinkingBuffer) {
+        const drained = drainReadableChunks(thinkingBuffer, { force: true, preserveNewlines: true });
+        thinkingBuffer = "";
+        for (const thought of drained.chunks) {
+          yield {
+            type: "thinking",
+            text: thought,
+            timestamp: timestamp(),
+          };
+        }
+      }
+
       yield lifecycleEvent("completed", "Subagent completed");
 
       const usage = sumUsageFromMessages(parsed.messages);
@@ -235,6 +248,19 @@ export async function* processStream(
     if (result) return result;
   }
 
+  // Drain any remaining thinking buffer on stream truncation
+  if (thinkingBuffer) {
+    const drained = drainReadableChunks(thinkingBuffer, { force: true, preserveNewlines: true });
+    thinkingBuffer = "";
+    for (const thought of drained.chunks) {
+      yield {
+        type: "thinking",
+        text: thought,
+        timestamp: timestamp(),
+      };
+    }
+  }
+
   return {
     done: false,
     error: "Stream truncated: no agent_end event received",
@@ -243,41 +269,26 @@ export async function* processStream(
 
   function drainReadableChunks(
     buffer: string,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; preserveNewlines?: boolean } = {},
   ): { chunks: string[]; rest: string } {
     const chunks: string[] = [];
-    const boundary = /([^.!?。！？]+[.!?。！？])(?:\s|$)/gu;
-    let match: RegExpExecArray | null;
-    let lastFlushEnd = 0;
+    const clean = options.preserveNewlines ? cleanThinkingText : cleanDisplayText;
 
-    while ((match = boundary.exec(buffer)) !== null) {
-      const chunk = cleanDisplayText(match[1]);
+    // Split on paragraph boundaries (double newlines).
+    // All segments except the last are complete paragraphs to emit.
+    // The last segment is the remainder (may be incomplete).
+    const parts = buffer.split("\n\n");
+    const completeParagraphs = options.force ? parts : parts.slice(0, -1);
+    const remainder = options.force ? "" : parts[parts.length - 1] ?? "";
+
+    for (const part of completeParagraphs) {
+      const chunk = clean(part);
       if (chunk.length > 0) {
         chunks.push(chunk);
       }
-      lastFlushEnd = match.index + match[0].length;
     }
 
-    let rest = lastFlushEnd > 0 ? buffer.slice(lastFlushEnd) : buffer;
-
-    if (!options.force && rest.length > 240) {
-      const splitAt = chooseSplitPoint(rest, 220);
-      const chunk = cleanDisplayText(rest.slice(0, splitAt));
-      if (chunk.length > 0) {
-        chunks.push(chunk);
-      }
-      rest = rest.slice(splitAt);
-    }
-
-    if (options.force) {
-      const chunk = cleanDisplayText(rest);
-      if (chunk.length > 0) {
-        chunks.push(chunk);
-      }
-      rest = "";
-    }
-
-    return { chunks, rest };
+    return { chunks, rest: remainder };
   }
 }
 
@@ -453,12 +464,6 @@ function toolResultPreview(parsed: Record<string, unknown>): string {
 function truncateDisplayText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function chooseSplitPoint(value: string, preferred: number): number {
-  if (value.length <= preferred) return value.length;
-  const whitespace = value.lastIndexOf(" ", preferred);
-  return whitespace > 80 ? whitespace : preferred;
 }
 
 function timestamp(): string {

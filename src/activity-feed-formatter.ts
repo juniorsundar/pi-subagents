@@ -106,6 +106,15 @@ function toActivityFeedLines(events: readonly ProgressEvent[]): ActivityFeedLine
   for (const event of events) {
     const line = toLine(event);
 
+    // Accumulate consecutive thinking events into a single block
+    if (line.type === "thinking") {
+      const last = lines[lines.length - 1];
+      if (last?.type === "thinking") {
+        lines[lines.length - 1] = { ...last, text: last.text + "\n\n" + line.text };
+        continue;
+      }
+    }
+
     if (isMergeableToolStart(line)) {
       lines.push(line);
       const key = mergeKey(line);
@@ -113,6 +122,20 @@ function toActivityFeedLines(events: readonly ProgressEvent[]): ActivityFeedLine
       indexes.push(lines.length - 1);
       openToolStarts.set(key, indexes);
       continue;
+    }
+
+    // Merge intermediate tool updates (tool_execution_update) into the open entry
+    if (isIntermediateToolUpdate(line)) {
+      const key = mergeKey(line);
+      const indexes = openToolStarts.get(key);
+      if (indexes?.length === 1) {
+        const startIndex = indexes[0]!;
+        lines[startIndex] = {
+          ...lines[startIndex],
+          toolResultPreview: line.toolResultPreview,
+        };
+        continue;
+      }
     }
 
     if (isMergeableToolCompletion(line)) {
@@ -166,6 +189,15 @@ function isMergeableToolCompletion(line: ActivityFeedLine): boolean {
   return line.type === "tool" &&
     (line.status === "succeeded" || line.status === "failed") &&
     !!line.toolName;
+}
+
+function isIntermediateToolUpdate(line: ActivityFeedLine): boolean {
+  return line.type === "tool" &&
+    line.status === "started" &&
+    !!line.toolName &&
+    !!line.toolCallId &&
+    !line.toolArgs &&
+    !!line.toolResultPreview;
 }
 
 function mergeKey(line: ActivityFeedLine): string {

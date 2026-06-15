@@ -184,6 +184,12 @@ export async function spawnSubagent(
     env: { ...process.env, ...env },
   });
 
+  // Capture stderr for diagnostics (model-not-found, API key errors, crashes etc.)
+  let childStderr = "";
+  child.stderr.on("data", (data: Buffer) => {
+    childStderr += data.toString();
+  });
+
   // 8a. Register the child in the process registry (for cancellation and orphan recovery)
   registry.register(agentId, child, taskDir, agentType);
 
@@ -270,7 +276,7 @@ export async function spawnSubagent(
         // Write timeout error to output.md
         writeFileSync(
           join(taskDir, "output.md"),
-          `[ERROR] Subagent "${agentType}" timed out after ${timeoutMs / 1000}s.`,
+          `[ERROR] Subagent "${agentType}" timed out after ${timeoutMs / 1000}s.${childStderr.trim() ? `\n\n--- Child stderr ---\n${childStderr.trim()}` : ""}`,
           "utf-8",
         );
         finish();
@@ -328,12 +334,18 @@ export async function spawnSubagent(
       appendFileSync(logPath, "completed\n", "utf-8");
     } else {
       const errorResult = streamResult as { done: false; error: string; partialText: string };
+      const stderrNote = childStderr.trim()
+        ? `\n\n--- Child stderr ---\n${childStderr.trim()}`
+        : "";
       writeFileSync(
         join(taskDir, "output.md"),
-        `[ERROR] ${errorResult.error}`,
+        `[ERROR] ${errorResult.error}${stderrNote}`,
         "utf-8",
       );
       appendFileSync(logPath, `error: ${errorResult.error}\n`, "utf-8");
+      if (childStderr.trim()) {
+        appendFileSync(logPath, `child stderr: ${childStderr.trim()}\n`, "utf-8");
+      }
     }
   }
 

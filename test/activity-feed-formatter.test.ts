@@ -368,6 +368,48 @@ describe("formatActivityFeed — in-progress tool blocks", () => {
     expect(feed.expanded.text).not.toContain("ok bash completed");
     expect(feed.expanded.lines).toHaveLength(2);
   });
+
+  it("merges intermediate tool updates into the open tool entry without duplicate lines", () => {
+    const events = [
+      {
+        type: "tool" as const,
+        text: "web_fetch: https://example.com",
+        timestamp: "2026-01-01T00:00:00Z",
+        status: "started" as const,
+        toolName: "web_fetch",
+        toolArgs: { url: "https://example.com" },
+        toolCallId: "call-1",
+      },
+      {
+        type: "tool" as const,
+        text: "web_fetch output → Fetching URL: https://example.com",
+        timestamp: "2026-01-01T00:00:01Z",
+        status: "started" as const,
+        toolName: "web_fetch",
+        toolCallId: "call-1",
+        toolResultPreview: "Fetching URL: https://example.com",
+      },
+      {
+        type: "tool" as const,
+        text: "web_fetch completed → page content",
+        timestamp: "2026-01-01T00:00:02Z",
+        status: "succeeded" as const,
+        toolName: "web_fetch",
+        toolCallId: "call-1",
+        toolResultPreview: "page content",
+      },
+    ];
+
+    const feed = formatActivityFeed(events, { collapsedWindow: 10 });
+
+    // Should show one merged tool block, not three separate lines
+    expect(feed.expanded.text).toBe([
+      "● web_fetch ✓",
+      "└ https://example.com",
+      "└─╼ page content",
+    ].join("\n"));
+    expect(feed.expanded.lines).toHaveLength(1);
+  });
 });
 
 describe("formatActivityFeed — thinking metadata", () => {
@@ -599,7 +641,7 @@ describe("formatActivityFeed — edge cases", () => {
 });
 
 describe("formatActivityFeed — thinking block text output", () => {
-  it("renders consecutive thinking events as separate blocks while keeping tool and assistant styles distinct", () => {
+  it("accumulates consecutive thinking events into a single block while keeping tool and assistant styles distinct", () => {
     const events = [
       {
         type: "thinking" as const,
@@ -639,7 +681,7 @@ describe("formatActivityFeed — thinking block text output", () => {
     expect(feed.collapsed.text).toBe([
       "◇ thinking",
       "- inspect renderer",
-      "◇ thinking",
+      "",
       "- verify formatter",
       "● read ✓",
       "└ /tmp/test.txt",

@@ -25,6 +25,14 @@ export function cleanDisplayText(value: string): string {
     .trim();
 }
 
+/** Like cleanDisplayText but preserves newlines for markdown-rendered content. */
+export function cleanThinkingText(value: string): string {
+  return value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\t\r]+/g, " ")
+    .trim();
+}
+
 export function summarizeToolArgs(
   toolName: string,
   args: Record<string, unknown>,
