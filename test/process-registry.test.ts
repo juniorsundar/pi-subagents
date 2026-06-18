@@ -26,7 +26,7 @@ afterEach(() => {
 describe("process-registry", () => {
   // ── Slice 1: Tracer Bullet — register() + get() ──
 
-  it("register() adds child to the map and writes process.json with { pid, agentType, startedAt }", () => {
+  it("register() adds child to the map and writes process.json with { pid, parentPid, agentType, startedAt }", () => {
     const workDir = makeWorkDir();
     const taskDir = join(workDir, "scout-a3f1b2c3");
     mkdirSync(taskDir, { recursive: true });
@@ -41,6 +41,7 @@ describe("process-registry", () => {
 
     const data = JSON.parse(readFileSync(jsonPath, "utf-8"));
     expect(data.pid).toBe(98765);
+    expect(data.parentPid).toBe(process.pid);
     expect(data.agentType).toBe("scout");
     expect(data.startedAt).toBeTypeOf("string");
     // startedAt is valid ISO 8601
@@ -162,6 +163,72 @@ describe("process-registry", () => {
 
     // Should not throw
     expect(() => reapOrphans(subagentsDir)).not.toThrow();
+  });
+
+  it("reapOrphans() skips a live child when its owner parent PID is still alive", () => {
+    const workDir = makeWorkDir();
+    const subagentsDir = join(workDir, ".pi", "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+
+    const ownedTaskDir = join(subagentsDir, "scout-owned111");
+    mkdirSync(ownedTaskDir, { recursive: true });
+    writeFileSync(
+      join(ownedTaskDir, "process.json"),
+      JSON.stringify({
+        pid: 11111,
+        parentPid: 99999,
+        agentType: "scout",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      }),
+      "utf-8",
+    );
+
+    const killSpy = vi.spyOn(process, "kill").mockReturnValue(true);
+
+    reapOrphans(subagentsDir);
+
+    expect(killSpy).toHaveBeenCalledWith(99999, 0);
+    expect(killSpy).not.toHaveBeenCalledWith(11111, "SIGKILL");
+    expect(existsSync(join(ownedTaskDir, "output.md"))).toBe(false);
+
+    killSpy.mockRestore();
+  });
+
+  it("reapOrphans() reaps a live child when its owner parent PID is dead", () => {
+    const workDir = makeWorkDir();
+    const subagentsDir = join(workDir, ".pi", "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+
+    const orphanTaskDir = join(subagentsDir, "worker-orphan1");
+    mkdirSync(orphanTaskDir, { recursive: true });
+    writeFileSync(
+      join(orphanTaskDir, "process.json"),
+      JSON.stringify({
+        pid: 22222,
+        parentPid: 99999,
+        agentType: "worker",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      }),
+      "utf-8",
+    );
+
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+      if (pid === 99999 && signal === 0) {
+        throw Object.assign(new Error("ESRCH: No such process"), { code: "ESRCH" });
+      }
+      return true;
+    });
+
+    reapOrphans(subagentsDir);
+
+    expect(killSpy).toHaveBeenCalledWith(99999, 0);
+    expect(killSpy).toHaveBeenCalledWith(22222, 0);
+    expect(killSpy).toHaveBeenCalledWith(22222, "SIGKILL");
+
+    const orphanOutput = readFileSync(join(orphanTaskDir, "output.md"), "utf-8");
+    expect(orphanOutput).toContain("[ERROR]");
+
+    killSpy.mockRestore();
   });
 
   // ── Slice 4: reapOrphans() edge cases ──

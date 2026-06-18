@@ -4,6 +4,13 @@ import type { ChildProcess } from "child_process";
 
 let registry = new Map<string, ChildProcess>();
 
+interface ProcessJson {
+  pid: number;
+  parentPid?: number;
+  agentType?: string;
+  startedAt?: string;
+}
+
 /** Resets the in-memory registry. Exposed for testing only. */
 export function _resetRegistry(): void {
   registry = new Map<string, ChildProcess>();
@@ -19,6 +26,7 @@ export function register(
 
   const processJson = {
     pid: child.pid,
+    parentPid: process.pid,
     agentType,
     startedAt: new Date().toISOString(),
   };
@@ -58,15 +66,23 @@ export function reapOrphans(subagentsDir: string): void {
 
     if (!existsSync(processJsonPath)) continue;
 
-    let processData: { pid: number };
+    let processData: ProcessJson;
     try {
       processData = JSON.parse(readFileSync(processJsonPath, "utf-8"));
     } catch {
       continue;
     }
 
-    const { pid } = processData;
+    const { pid, parentPid } = processData;
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) continue;
+
+    // Newer process.json files record the owning pi session's PID. If that
+    // parent session is still alive, the child is managed, not orphaned. This
+    // prevents parallel subagents in one session — or subagents from another
+    // live session in the same cwd — from killing each other during recovery.
+    if (typeof parentPid === "number" && Number.isInteger(parentPid) && parentPid > 0) {
+      if (isPidAlive(parentPid)) continue;
+    }
 
     if (!isPidAlive(pid)) continue;
 
