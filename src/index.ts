@@ -422,6 +422,9 @@ ${outputText}`);
     },
   });
 
+  // Publish spawnSubagent on the shared event bus for other extensions to consume
+  pi.events.emit("subagents:spawn:provide", spawnSubagent);
+
   // Warn on startup if legacy @tintinweb/pi-subagents is still in settings.json
   pi.on("session_start", async (_event, ctx) => {
     const settingsPath = join(ctx.cwd, "settings.json");
