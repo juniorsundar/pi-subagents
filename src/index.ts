@@ -384,7 +384,7 @@ export default function subagentEntryPoint(
         );
       }
 
-      // For final (non-partial) results, clear spinner timer and render metadata block + separator + output
+      // For final (non-partial) results, clear spinner timer, then render metadata block + separator + output
       if (!options?.isPartial) {
         // Clear spinner timer on final render
         const state = context.state ?? (context.state = {});
@@ -422,8 +422,15 @@ ${outputText}`);
     },
   });
 
-  // Publish spawnSubagent on the shared event bus for other extensions to consume
-  pi.events.emit("subagents:spawn:provide", spawnSubagent);
+  // Publish spawnSubagent on the shared event bus for other extensions to consume.
+  // Runtime defense: gracefully degrade when running under older hosts or narrow
+  // test mocks that do not expose the shared event bus.
+  const emit = (pi as ExtensionAPI & {
+    events?: { emit?: (event: string, ...args: unknown[]) => void };
+  }).events?.emit;
+  if (typeof emit === "function") {
+    emit("subagents:spawn:provide", spawnSubagent);
+  }
 
   // Warn on startup if legacy @tintinweb/pi-subagents is still in settings.json
   pi.on("session_start", async (_event, ctx) => {

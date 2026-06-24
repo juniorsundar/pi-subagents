@@ -40,7 +40,6 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: true
 inheritExtensions: true
-defaultProgress: true
 ---
 
 You are a fast, focused recon agent. Your goal is to explore an unfamiliar
@@ -67,10 +66,8 @@ Be concise. Return your findings as plain text with paths and key observations.
 | `inheritSkills` | `boolean` (default: `true`) | Inherit loaded skills |
 | `inheritExtensions` | `boolean` (default: `true`) | Inherit loaded extensions |
 | `timeout` | `number` | Timeout in seconds (defaults vary by agent type; global default is 300s) |
-| `output` | `string` | Output format specifier |
-| `defaultProgress` | `boolean` | Whether to emit default progress indicators |
 
-Unknown frontmatter keys are preserved as `extra` and passed through.
+Unknown frontmatter keys are rejected at parse time to catch typos early.
 
 ## Provided Tool
 
@@ -90,7 +87,7 @@ The tool dynamically lists available agents from the agents directory. On execut
 4. Builds the appropriate `pi --mode json` command with flags for model, tools, system prompt, and inheritance
 5. Spawns a child pi process
 6. Streams typed NDJSON progress events from the child's stdout
-7. Tails `progress.jsonl` for real-time activity feed updates
+7. Delivers typed progress events to the TUI via persist-and-push (live feed comes from `tailEvents`; `progress.jsonl` is retained for durable/cross-process recovery)
 8. Returns the final output from `output.md` along with metadata
 
 #### Override Precedence
@@ -138,7 +135,6 @@ The model can be set at three levels (highest to lowest priority):
 | `src/activity-feed-formatter.ts` | Transform raw progress events into collapsed/expanded TUI views |
 | `src/activity-feed-renderer.ts` | Render activity feed as TUI components |
 | `src/activity-feed-tool-formatting.ts` | Tool argument summarization for compact UI display |
-| `src/tail-progress.ts` | Async generator that tails `progress.jsonl` like `tail -f` |
 | `src/process-registry.ts` | Register/deregister child processes for cancellation and orphan recovery |
 
 ### Lifecycle
@@ -146,7 +142,7 @@ The model can be set at three levels (highest to lowest priority):
 1. **Setup** — Generate `agentId`, create task directory, write `task.md`, parse definition, build command
 2. **Spawn** — Fork `pi --mode json --no-session` with appropriate flags
 3. **Stream** — Pipe child stdout through `withRawLines` (persists raw lines to `events.jsonl`) into `processStream` (typed event generator)
-4. **Progress** — `tailProgress` tails `progress.jsonl` and delivers formatted `ActivityFeedOutput` snapshots to the TUI via `onProgress` callback
+4. **Progress** — `tailEvents(signal)` replays the buffered backlog then delivers live `ProgressEvent` objects to the TUI via `onProgress` callback (persist-and-push, no file polling)
 5. **Completion** — Wait for child exit, drain stream, write final `output.md`, extract usage metadata, assemble result
 
 ### Timeout & Cancellation
@@ -199,7 +195,7 @@ Tests are written with [Vitest](https://vitest.dev/) and live in `test/`. The te
 - Command building (flags, model overrides, inheritance)
 - Activity feed formatting (collapsed/expanded views, tool merging)
 - Activity feed rendering (TUI component output)
-- Stream processing (NDJSON parsing, skeleton refresh, error recovery)
+- Stream processing (NDJSON parsing, error recovery)
 - Spawner integration (success, timeout, cancellation, orphan reaping)
 - E2E error paths (unknown agent, timeout signal, bad definition)
 - Process registry (register/deregister, orphan reaping)

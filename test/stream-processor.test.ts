@@ -664,4 +664,65 @@ describe("processStream", () => {
       expect(assistantEvents.length).toBe(0);
     });
   });
+
+  // ── Slice 10b: Chunk contract — no silent drops ──
+  describe("chunk contract: no silent drops", () => {
+    it("processes adjacent complete JSON chunks without newlines", async () => {
+      // Two complete JSON records arrive as separate chunks with no newline.
+      // Both must be processed (the old backward-compatible branch would drop the first).
+      const jsonA = JSON.stringify({ type: "tool_call", toolCallId: "tc1", toolName: "bash", args: { command: "echo A" } });
+      const jsonB = JSON.stringify({ type: "tool_call", toolCallId: "tc2", toolName: "read", args: { path: "/tmp/b" } });
+      const { events, result } = await collectStream([jsonA, jsonB]);
+
+      const toolEvents = events.filter(
+        (e) => (e as Record<string, unknown>).type === "tool" && (e as Record<string, unknown>).status === "started",
+      );
+      expect(toolEvents.length).toBe(2);
+      expect(toolEvents[0]).toMatchObject({ toolName: "bash", toolCallId: "tc1" });
+      expect(toolEvents[1]).toMatchObject({ toolName: "read", toolCallId: "tc2" });
+    });
+
+    it("processes arbitrary JSON split across chunks", async () => {
+      // A single JSON record fragmented into four small chunks.
+      const record = JSON.stringify({ type: "tool_call", toolCallId: "split1", toolName: "grep", args: { pattern: "needle" } });
+      const mid = Math.floor(record.length / 2);
+      const c1 = record.slice(0, 1);
+      const c2 = record.slice(1, mid);
+      const c3 = record.slice(mid, record.length - 1);
+      const c4 = record.slice(record.length - 1);
+      const { events } = await collectStream([c1, c2, c3, c4]);
+
+      const toolEvents = events.filter(
+        (e) => (e as Record<string, unknown>).type === "tool" && (e as Record<string, unknown>).status === "started",
+      );
+      expect(toolEvents.length).toBe(1);
+      expect(toolEvents[0]).toMatchObject({ toolName: "grep", toolCallId: "split1" });
+    });
+
+    it("processes newline-delimited multiple records in one chunk", async () => {
+      const jsonA = JSON.stringify({ type: "tool_call", toolCallId: "nd1", toolName: "bash", args: { command: "ls" } });
+      const jsonB = JSON.stringify({ type: "tool_call", toolCallId: "nd2", toolName: "bash", args: { command: "pwd" } });
+      const { events } = await collectStream([`${jsonA}\n${jsonB}\n`]);
+
+      const toolEvents = events.filter(
+        (e) => (e as Record<string, unknown>).type === "tool" && (e as Record<string, unknown>).status === "started",
+      );
+      expect(toolEvents.length).toBe(2);
+      expect(toolEvents[0]).toMatchObject({ toolCallId: "nd1" });
+      expect(toolEvents[1]).toMatchObject({ toolCallId: "nd2" });
+    });
+
+    it("flushes one final unterminated record at EOF", async () => {
+      // One complete JSON record arrives without a trailing newline, then the
+      // stream ends. The EOF flush must process it.
+      const jsonA = JSON.stringify({ type: "tool_call", toolCallId: "eof1", toolName: "bash", args: { command: "whoami" } });
+      const { events } = await collectStream([jsonA]);
+
+      const toolEvents = events.filter(
+        (e) => (e as Record<string, unknown>).type === "tool" && (e as Record<string, unknown>).status === "started",
+      );
+      expect(toolEvents.length).toBe(1);
+      expect(toolEvents[0]).toMatchObject({ toolName: "bash", toolCallId: "eof1" });
+    });
+  });
 });

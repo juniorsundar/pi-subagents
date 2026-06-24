@@ -120,7 +120,12 @@ function styleFlatLine(
   theme: { fg: (color: string, text: string) => string },
 ): string {
   const prefix = linePrefix(line);
-  const text = prefix ? `${prefix} ${line.text}` : line.text;
+  const rawText = prefix ? `${prefix} ${line.text}` : line.text;
+  let text = rawText;
+  if (line.type !== "tool" && !isToolBlock(line)) {
+    if (line.status === "succeeded") text = `${rawText} ✓`;
+    else if (line.status === "failed") text = `${rawText} ✗`;
+  }
 
   if (line.type === "tool") {
     if (line.status === "failed") return theme.fg("error", text);
@@ -132,7 +137,7 @@ function styleFlatLine(
   if (line.type === "usage") return theme.fg("dim", text);
   if (line.type === "lifecycle" || line.type === "terminal") {
     if (line.status === "failed") return theme.fg("error", text);
-    if (line.status === "completed") return theme.fg("success", text);
+    if (line.status === "completed" || line.status === "succeeded") return theme.fg("success", text);
     return theme.fg("dim", text);
   }
   return text;

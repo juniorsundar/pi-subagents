@@ -1,4 +1,4 @@
-import type { ProgressEvent } from "./tail-progress";
+import type { ProgressEvent } from "./progress-event";
 import { cleanDisplayText, cleanThinkingText } from "./activity-feed-tool-formatting";
 
 export type StreamResult =
@@ -209,38 +209,24 @@ export async function* processStream(
     const text = String(chunk);
     if (text.length === 0) continue;
 
-    // Explicit NDJSON chunks: process every complete newline-terminated record
-    // and keep the last partial line for the next chunk.
-    if (text.includes("\n") || pending.includes("\n")) {
-      const parts = (pending + text).split(/\r?\n/);
+    pending += text;
+
+    // Process complete newline-delimited records from the buffer.
+    if (pending.includes("\n")) {
+      const parts = pending.split(/\r?\n/);
       pending = parts.pop() ?? "";
       for (const part of parts) {
         const result = yield* processLine(part);
         if (result) return result;
       }
-      continue;
     }
 
-    // Backward-compatible path for callers/tests that pass one complete line at
-    // a time without trailing newlines. If concatenating pending + text forms a
-    // JSON record, process it. Otherwise, if the new chunk is independently a
-    // JSON record, treat the pending text as malformed and skip it.
-    const combined = pending + text;
-    if (parseJsonObject(combined)) {
-      const result = yield* processLine(combined);
+    // If the buffer has no newlines and is a complete JSON record, process it.
+    if (!pending.includes("\n") && parseJsonObject(pending)) {
+      const result = yield* processLine(pending);
       pending = "";
       if (result) return result;
-      continue;
     }
-
-    if (pending && parseJsonObject(text)) {
-      const result = yield* processLine(text);
-      pending = "";
-      if (result) return result;
-      continue;
-    }
-
-    pending = combined;
   }
 
   if (pending.length > 0) {

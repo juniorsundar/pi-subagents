@@ -1,13 +1,15 @@
 import { parseAgentDefinitionFile } from "./agent-definition-parser";
 import { buildCommand, type BuildCommandOverrides } from "./command-builder";
 import { spawn } from "child_process";
-import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, existsSync } from "fs";
+import { readdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { formatActivityFeed, type ActivityFeedOutput } from "./activity-feed-formatter";
-import { tailProgress, type ProgressEvent } from "./tail-progress";
+import type { ProgressEvent } from "./progress-event";
 import { processStream, type StreamResult } from "./stream-processor";
 import * as registry from "./process-registry";
+import { WorkspaceStore } from "./workspace-store";
+import type { TaskWorkspace } from "./task-workspace";
 import type { Readable } from "stream";
 
 export const TIMEOUT_DEFAULTS: Record<string, number> = {
@@ -71,6 +73,7 @@ export class UnknownAgentError extends Error {
 }
 
 export class SubagentTimeoutError extends Error {
+  /** @deprecated Use returned error output, not thrown exceptions. */
   constructor(
     public readonly agentType: string,
     public readonly timeoutMs: number,
@@ -113,20 +116,19 @@ export async function spawnSubagent(
     ? generateId()
     : `${agentType}-${randomUUID().slice(0, 8)}`;
 
-  // 2. Create task directory
-  const subagentsDir = join(workDir, ".pi", "subagents");
-  const taskDir = join(subagentsDir, agentId);
+  // 2. Create task workspace via store (replaces mkdirSync + join)
+  const store = new WorkspaceStore(join(workDir, ".pi", "subagents"));
 
-  // 2a. Reap any orphan processes from previous runs (before creating new task dir)
-  registry.reapOrphans(subagentsDir);
+  // 2a. Reap any orphan processes from previous runs
+  registry.reapOrphans(store);
 
-  // 2b. Now create the new task directory
-  mkdirSync(taskDir, { recursive: true });
+  // 2b. Create the new task workspace
+  const ws: TaskWorkspace = store.create(agentId);
 
-  // 2a. Track latest usage from progress events
+  // 2c. Track latest usage from progress events
   let latestUsage: SpawnSubagentResult["usage"] | undefined;
 
-  // 2b. Notify progress observer with initial empty feed (tracer bullet)
+  // 2d. Notify progress observer with initial empty feed
   const wrappedOnProgress = onProgress
     ? (feed: ActivityFeedOutput) => {
         if (feed.usage) {
@@ -149,7 +151,7 @@ export async function spawnSubagent(
   }
 
   // 3. Write task.md
-  writeFileSync(join(taskDir, "task.md"), task, "utf-8");
+  ws.writeTask(task);
 
   // 4. Load agent definition (catch parse error → throw UnknownAgentError)
   let definition;
@@ -160,8 +162,7 @@ export async function spawnSubagent(
   }
 
   // 5. Build command args and env
-  const manifestPath = join(taskDir, "manifest.json");
-  const { args, env } = buildCommand(definition, task, manifestPath, overrides);
+  const { args, env } = buildCommand(definition, task, overrides);
 
   // 5a. Resolve model for metadata: overrides take precedence over definition
   const resolvedModel: string | undefined = overrides?.model ?? definition.model;
@@ -169,11 +170,11 @@ export async function spawnSubagent(
   // 6. Write manifest.json
   const manifest = {
     agentId,
-    taskDir,
+    taskDir: ws.directory,
     command: ["pi", ...args],
     env,
   };
-  writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+  ws.writeManifest(manifest);
 
   // 7. Determine pi path (default: find "pi" in PATH)
   const resolvedPiPath = piPathOverride ?? "pi";
@@ -190,30 +191,42 @@ export async function spawnSubagent(
     childStderr += data.toString();
   });
 
-  // 8a. Register the child in the process registry (for cancellation and orphan recovery)
-  registry.register(agentId, child, taskDir, agentType);
+  // 8a. Write process.json for orphan recovery, then register the child
+  ws.writeProcessInfo({ pid: child.pid!, parentPid: process.pid })
+  registry.register(agentId, child);
 
   // 8b. Record start time for duration measurement (after spawn for wall-clock accuracy)
   const startTime = Date.now();
 
-  // 8b. Start progress tailing if callback provided
-  let progressTailer: { controller: AbortController; done: Promise<void> } | null = null;
+  // 8b. Start progress tailing via workspace live channel
+  let tailAbort: AbortController | null = null;
+  let tailDone: Promise<void> | null = null;
+  let tailEvents: ProgressEvent[] = [];
+
   if (wrappedOnProgress) {
-    progressTailer = startProgressTailing(taskDir, wrappedOnProgress);
+    tailAbort = new AbortController();
+    tailDone = (async () => {
+      try {
+        for await (const event of ws.tailEvents(tailAbort.signal)) {
+          tailEvents.push(event);
+          try {
+            wrappedOnProgress(formatActivityFeed(tailEvents));
+          } catch {
+            console.warn("[pi-subagents] Progress callback threw during event delivery");
+          }
+        }
+      } catch {
+        // Tailing stopped (aborted or error) — silently ignore
+      }
+    })();
   }
 
-  // 8c. Initialize events.jsonl and run.log (persistence replaces stream-filter.sh)
-  const eventsPath = join(taskDir, "events.jsonl");
-  const logPath = join(taskDir, "run.log");
-  writeFileSync(
-    logPath,
-    `spawner started, task_dir=${taskDir}\n`,
-    "utf-8",
-  );
+  // 8c. Initialize run.log via workspace
+  ws.log(`spawner started, agentId=${agentId}`);
 
   // 8d. Consume stream processor: pipe child stdout through typed NDJSON pipeline.
-  // Raw lines are also persisted to events.jsonl, matching old stream-filter.sh behavior.
-  const stream = processStream(withRawLines(child.stdout, eventsPath));
+  // Raw lines are persisted to events.jsonl via workspace.
+  const stream = processStream(withRawLines(child.stdout, ws));
   let streamResult: StreamResult | null = null;
   let timedOut = false;
 
@@ -222,12 +235,8 @@ export async function spawnSubagent(
       let result: IteratorResult<ProgressEvent, StreamResult>;
       while (!(result = await stream.next()).done) {
         const event = result.value as ProgressEvent;
-        // Append every event to progress.jsonl
-        appendFileSync(
-          join(taskDir, "progress.jsonl"),
-          JSON.stringify(event) + "\n",
-          "utf-8",
-        );
+        // Append every event to progress.jsonl via workspace
+        ws.appendEvent(event);
         // Track latest usage from progress events
         if (event.type === "usage" && event.input !== undefined) {
           latestUsage = {
@@ -271,13 +280,11 @@ export async function spawnSubagent(
       const timer = setTimeout(() => {
         timedOut = true;
         // Stop progress tailing before killing child
-        progressTailer?.controller.abort();
+        tailAbort?.abort();
         child.kill("SIGTERM");
-        // Write timeout error to output.md
-        writeFileSync(
-          join(taskDir, "output.md"),
+        // Write timeout error to output.md via workspace
+        ws.writeOutput(
           `[ERROR] Subagent "${agentType}" timed out after ${timeoutMs / 1000}s.${childStderr.trim() ? `\n\n--- Child stderr ---\n${childStderr.trim()}` : ""}`,
-          "utf-8",
         );
         finish();
       }, timeoutMs);
@@ -289,7 +296,7 @@ export async function spawnSubagent(
         // Deregister from process registry
         registry.deregister(agentId, child);
         // Stop progress tailing
-        progressTailer?.controller.abort();
+        tailAbort?.abort();
         finish();
       });
 
@@ -298,7 +305,7 @@ export async function spawnSubagent(
         // Deregister from process registry
         registry.deregister(agentId, child);
         // Stop progress tailing on crash
-        progressTailer?.controller.abort();
+        tailAbort?.abort();
         fail(err);
       });
 
@@ -307,7 +314,7 @@ export async function spawnSubagent(
         const cancel = () => {
           clearTimeout(timer);
           registry.deregister(agentId, child);
-          progressTailer?.controller.abort();
+          tailAbort?.abort();
           child.kill("SIGTERM");
           finish();
         };
@@ -322,66 +329,53 @@ export async function spawnSubagent(
     // Wait for stream consumer to finish (pipe broke, no more events will arrive)
     await streamConsumer;
     // Wait for progress tailer to finish
-    if (progressTailer) {
-      await progressTailer.done;
+    if (tailDone) {
+      await tailDone;
     }
   }
 
   // 11. Write output.md from stream result if not already written (e.g. by timeout)
   if (!timedOut && streamResult) {
     if (streamResult.done) {
-      writeFileSync(join(taskDir, "output.md"), (streamResult as { done: true; finalText: string }).finalText, "utf-8");
-      appendFileSync(logPath, "completed\n", "utf-8");
+      ws.writeOutput((streamResult as { done: true; finalText: string }).finalText);
+      ws.log("completed");
     } else {
       const errorResult = streamResult as { done: false; error: string; partialText: string };
       const stderrNote = childStderr.trim()
         ? `\n\n--- Child stderr ---\n${childStderr.trim()}`
         : "";
-      writeFileSync(
-        join(taskDir, "output.md"),
-        `[ERROR] ${errorResult.error}${stderrNote}`,
-        "utf-8",
-      );
-      appendFileSync(logPath, `error: ${errorResult.error}\n`, "utf-8");
+      ws.writeOutput(`[ERROR] ${errorResult.error}${stderrNote}`);
+      ws.log(`error: ${errorResult.error}`);
       if (childStderr.trim()) {
-        appendFileSync(logPath, `child stderr: ${childStderr.trim()}\n`, "utf-8");
+        ws.log(`child stderr: ${childStderr.trim()}`);
       }
     }
   }
 
-  // 12. If no usage was captured via progress events, extract from progress.jsonl
+  // 12. Read all buffered events once — used for both usage extraction and final feed.
+  const allEvents = ws.readProgressEvents();
+
   if (!latestUsage) {
-    latestUsage = extractUsageFromProgressFile(taskDir);
+    latestUsage = extractUsageFromEvents(allEvents);
   }
 
-  // 12.5 Generate final activity feed from progress.jsonl
+  // 12.5 Generate final activity feed from progress events
   let activityFeed: ActivityFeedOutput | undefined;
   try {
-    const progressPath = join(taskDir, "progress.jsonl");
-    if (existsSync(progressPath)) {
-      const raw = readFileSync(progressPath, "utf-8");
-      const events: ProgressEvent[] = raw.trim().split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          try { return JSON.parse(line) as ProgressEvent; } catch { return null; }
-        })
-        .filter((e): e is ProgressEvent => e !== null);
-      if (events.length > 0) {
-        activityFeed = formatActivityFeed(events);
-      }
+    if (allEvents.length > 0) {
+      activityFeed = formatActivityFeed(allEvents);
     }
   } catch {
     // If formatting fails, activityFeed remains undefined — don't throw
   }
 
   // 13. Read output.md and return
-  const outputPath = join(taskDir, "output.md");
   let output: string;
   try {
-    output = readFileSync(outputPath, "utf-8");
+    output = ws.readOutput() ?? "";
   } catch {
     output = `[ERROR] Subagent completed but no output.md was produced.`;
-    writeFileSync(outputPath, output, "utf-8");
+    ws.writeOutput(output);
   }
 
   return { output, agentId, agentType, duration: Date.now() - startTime, model: resolvedModel, usage: latestUsage, activityFeed };
@@ -390,23 +384,21 @@ export async function spawnSubagent(
 /**
  * Pass-through async generator that writes raw NDJSON lines to events.jsonl.
  * Yields the same chunks as the input so the stream processor can process them.
- * Splits chunks on newlines to write individual JSON records, matching old
- * stream-filter.sh behavior where each valid line was appended to events.jsonl.
  */
 async function* withRawLines(
   stream: Readable,
-  eventsPath: string,
+  ws: TaskWorkspace,
 ): AsyncIterable<string> {
   let pending = "";
   for await (const chunk of stream) {
     const text = typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf-8");
-    // Flush complete lines to events.jsonl
+    // Flush complete lines to events.jsonl via workspace
     pending += text;
     while (pending.includes("\n")) {
       const nlIndex = pending.indexOf("\n");
       const line = pending.slice(0, nlIndex);
       if (line.length > 0) {
-        appendFileSync(eventsPath, line + "\n", "utf-8");
+        ws.appendRawLine(line);
       }
       pending = pending.slice(nlIndex + 1);
     }
@@ -414,70 +406,28 @@ async function* withRawLines(
   }
   // Flush trailing content
   if (pending.trim().length > 0) {
-    appendFileSync(eventsPath, pending.trimEnd() + "\n", "utf-8");
+    ws.appendRawLine(pending.trimEnd());
   }
 }
 
 /**
- * Start tailing progress.jsonl and deliver formatted snapshots through the callback.
- * Returns a controller to abort the tailing and a promise that resolves when tailing stops.
+ * Extract the last usage event from in-memory progress events.
+ * Returns undefined if no usage events exist.
  */
-function startProgressTailing(
-  taskDir: string,
-  onProgress: ProgressCallback,
-): { controller: AbortController; done: Promise<void> } {
-  const controller = new AbortController();
-  const progressPath = join(taskDir, "progress.jsonl");
-  const events: ProgressEvent[] = [];
-
-  const done = (async () => {
-    try {
-      for await (const event of tailProgress(progressPath, { signal: controller.signal })) {
-        events.push(event);
-        try {
-          onProgress(formatActivityFeed(events));
-        } catch {
-          console.warn("[pi-subagents] Progress callback threw during event delivery");
-        }
-      }
-    } catch {
-      // Tailing stopped (aborted or error) — silently ignore
-    }
-  })();
-
-  return { controller, done };
-}
-
-/**
- * Extract the last usage event from progress.jsonl if it exists.
- * Returns undefined if the file doesn't exist or contains no usage events.
- */
-function extractUsageFromProgressFile(
-  taskDir: string,
+function extractUsageFromEvents(
+  events: ProgressEvent[],
 ): SpawnSubagentResult["usage"] | undefined {
-  const progressPath = join(taskDir, "progress.jsonl");
-  try {
-    if (!existsSync(progressPath)) return undefined;
-    const raw = readFileSync(progressPath, "utf-8");
-    const lines = raw.trim().split("\n");
-    // Scan backwards for the last usage event
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const event: ProgressEvent = JSON.parse(lines[i]);
-        if (event.type === "usage") {
-          return {
-            input: event.input,
-            output: event.output,
-            cacheRead: event.cacheRead,
-            cacheWrite: event.cacheWrite,
-          };
-        }
-      } catch {
-        // Malformed line — skip
-      }
+  // Scan backwards for the last usage event
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === "usage") {
+      return {
+        input: event.input,
+        output: event.output,
+        cacheRead: event.cacheRead,
+        cacheWrite: event.cacheWrite,
+      };
     }
-  } catch {
-    // File unreadable — silently ignore
   }
   return undefined;
 }

@@ -633,3 +633,122 @@ describe("renderActivityFeed", () => {
     ]);
   });
 });
+
+describe("renderActivityFeed — succeeded status for lifecycle and terminal", () => {
+  it("renders a lifecycle event with status 'succeeded' with checkmark and success color", () => {
+    const feed = {
+      collapsed: {
+        text: "",
+        hiddenCount: 0,
+        lines: [
+          {
+            type: "lifecycle" as const,
+            text: "Subagent completed",
+            timestamp: "2026-01-01T00:00:00Z",
+            status: "succeeded" as const,
+          },
+        ],
+      },
+      expanded: {
+        text: "",
+        hiddenCount: 0,
+        lines: [
+          {
+            type: "lifecycle" as const,
+            text: "Subagent completed",
+            timestamp: "2026-01-01T00:00:00Z",
+            status: "succeeded" as const,
+          },
+        ],
+      },
+    };
+
+    const theme = {
+      bold: (text: string) => `BOLD(${text})`,
+      fg: (color: string, text: string) => `FG_${color.toUpperCase()}(${text})`,
+    };
+
+    const component: any = renderActivityFeed(feed, false, theme);
+    expect(component.render(80)).toEqual([
+      "FG_SUCCESS(done Subagent completed ✓)",
+    ]);
+  });
+
+  it("renders a terminal event with status 'succeeded' with checkmark and success color", () => {
+    const feed = {
+      collapsed: {
+        text: "",
+        hiddenCount: 0,
+        lines: [
+          {
+            type: "terminal" as const,
+            text: "Subagent finished",
+            timestamp: "2026-01-01T00:00:00Z",
+            status: "succeeded" as const,
+          },
+        ],
+      },
+      expanded: {
+        text: "",
+        hiddenCount: 0,
+        lines: [
+          {
+            type: "terminal" as const,
+            text: "Subagent finished",
+            timestamp: "2026-01-01T00:00:00Z",
+            status: "succeeded" as const,
+          },
+        ],
+      },
+    };
+
+    const theme = {
+      bold: (text: string) => `BOLD(${text})`,
+      fg: (color: string, text: string) => `FG_${color.toUpperCase()}(${text})`,
+    };
+
+    const component: any = renderActivityFeed(feed, false, theme);
+    expect(component.render(80)).toEqual([
+      "FG_SUCCESS(done Subagent finished ✓)",
+    ]);
+  });
+
+  it("renders a lifecycle event with status 'failed' with cross mark and error color", () => {
+    const feed = {
+      collapsed: {
+        text: "",
+        hiddenCount: 0,
+        lines: [
+          {
+            type: "lifecycle" as const,
+            text: "Subagent crashed",
+            timestamp: "2026-01-01T00:00:00Z",
+            status: "failed" as const,
+          },
+        ],
+      },
+      expanded: {
+        text: "",
+        hiddenCount: 0,
+        lines: [
+          {
+            type: "lifecycle" as const,
+            text: "Subagent crashed",
+            timestamp: "2026-01-01T00:00:00Z",
+            status: "failed" as const,
+          },
+        ],
+      },
+    };
+
+    const theme = {
+      bold: (text: string) => `BOLD(${text})`,
+      fg: (color: string, text: string) => `FG_${color.toUpperCase()}(${text})`,
+    };
+
+    const component: any = renderActivityFeed(feed, false, theme);
+    expect(component.render(80)).toEqual([
+      "FG_ERROR(run Subagent crashed ✗)",
+    ]);
+  });
+});

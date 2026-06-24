@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, chmodSync, readFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
   spawnSubagent,
   UnknownAgentError,
 } from "../src/spawner";
+import { WorkspaceStore } from "../src/workspace-store";
 import type { ActivityFeedOutput } from "../src/activity-feed-formatter";
 
 // ── Test helpers ──
@@ -108,40 +109,32 @@ exit 0
     // Returns output from stream processor's final text
     expect(result.output.trim()).toBe("Hello from subagent.");
 
-    // Created task directory
-    const taskDir = join(workDir, ".pi", "subagents", "scout-a3f1b2c3");
-    expect(existsSync(taskDir)).toBe(true);
+    const store = new WorkspaceStore(join(workDir, ".pi", "subagents"));
+    const ws = store.open("scout-a3f1b2c3");
 
-    // Wrote task.md with task content
-    const taskMd = readFileSync(join(taskDir, "task.md"), "utf-8");
-    expect(taskMd).toBe("Find all TypeScript files");
+    expect(ws.readTask()).toBe("Find all TypeScript files");
 
-    // Wrote manifest.json with correct structure
-    const manifestRaw = readFileSync(join(taskDir, "manifest.json"), "utf-8");
-    const manifest = JSON.parse(manifestRaw);
-    expect(manifest.agentId).toBe("scout-a3f1b2c3");
-    expect(manifest.taskDir).toBe(taskDir);
-    expect(manifest.command).toBeInstanceOf(Array);
-    expect(manifest.command.length).toBeGreaterThan(0);
-    expect(manifest.command[0]).toBe("pi");
-    expect(manifest.command).toContain("-p");
-    expect(manifest.command[manifest.command.indexOf("-p") + 1]).toBe("Find all TypeScript files");
-    expect(manifest.command).toContain("--system-prompt");
-    expect(manifest.command[manifest.command.indexOf("--system-prompt") + 1]).toBe("You are a scout agent.");
-    expect(manifest.env).toBeTypeOf("object");
-    expect(manifest.env.PI_SUBAGENT_CHILD).toBe("1");
+    const manifest = ws.readManifest();
+    expect(manifest).not.toBeNull();
+    expect(manifest!.agentId).toBe("scout-a3f1b2c3");
+    expect(manifest!.taskDir).toBe(join(workDir, ".pi", "subagents", "scout-a3f1b2c3"));
+    expect(manifest!.command).toBeInstanceOf(Array);
+    expect(manifest!.command.length).toBeGreaterThan(0);
+    expect(manifest!.command[0]).toBe("pi");
+    expect(manifest!.command).toContain("-p");
+    expect(manifest!.command[manifest!.command.indexOf("-p") + 1]).toBe("Find all TypeScript files");
+    expect(manifest!.command).toContain("--system-prompt");
+    expect(manifest!.command[manifest!.command.indexOf("--system-prompt") + 1]).toBe("You are a scout agent.");
+    expect(manifest!.env).toBeTypeOf("object");
+    expect(manifest!.env.PI_SUBAGENT_CHILD).toBe("1");
 
-    // output.md should exist with final text
-    expect(existsSync(join(taskDir, "output.md"))).toBe(true);
-    expect(readFileSync(join(taskDir, "output.md"), "utf-8").trim()).toBe("Hello from subagent.");
+    expect(ws.hasOutput()).toBe(true);
+    expect(ws.readOutput()?.trim()).toBe("Hello from subagent.");
 
-    // progress.jsonl should exist with stream processor events
-    expect(existsSync(join(taskDir, "progress.jsonl"))).toBe(true);
-    const progressLines = readFileSync(join(taskDir, "progress.jsonl"), "utf-8").trim().split("\n").filter(Boolean);
-    expect(progressLines.length).toBeGreaterThanOrEqual(2);
-    const firstEvent = JSON.parse(progressLines[0]);
-    expect(firstEvent.type).toBe("lifecycle");
-    expect(firstEvent.status).toBe("started");
+    const progressEvents = ws.readProgressEvents();
+    expect(progressEvents.length).toBeGreaterThanOrEqual(2);
+    expect(progressEvents[0].type).toBe("lifecycle");
+    expect(progressEvents[0].status).toBe("started");
   });
 
   it("writes events.jsonl with raw NDJSON lines and run.log with lifecycle", async () => {
@@ -172,19 +165,17 @@ exit 0
       generateId: () => "scout-persist",
     });
 
-    const taskDir = join(workDir, ".pi", "subagents", "scout-persist");
+    const store = new WorkspaceStore(join(workDir, ".pi", "subagents"));
+    const ws = store.open("scout-persist");
 
     // events.jsonl should contain the raw NDJSON lines
-    expect(existsSync(join(taskDir, "events.jsonl"))).toBe(true);
-    const eventsRaw = readFileSync(join(taskDir, "events.jsonl"), "utf-8");
-    const eventsLines = eventsRaw.trim().split("\n").filter(Boolean);
+    const eventsLines = ws.readRawEvents();
     expect(eventsLines.length).toBe(4);
     expect(eventsLines[0]).toContain('"type":"agent_start"');
     expect(eventsLines[3]).toContain('"type":"agent_end"');
 
     // run.log should contain spawner start and completion
-    expect(existsSync(join(taskDir, "run.log"))).toBe(true);
-    const logText = readFileSync(join(taskDir, "run.log"), "utf-8");
+    const logText = ws.readLog();
     expect(logText).toContain("spawner started");
     expect(logText).toContain("completed");
 
@@ -277,9 +268,9 @@ exec tail -f /dev/null
     expect(elapsed).toBeLessThan(5000);
 
     // output.md should contain the timeout error
-    const taskDir = join(workDir, ".pi", "subagents", "scout-timeout");
-    const outputMd = readFileSync(join(taskDir, "output.md"), "utf-8");
-    expect(outputMd).toContain("timed out");
+    const store = new WorkspaceStore(join(workDir, ".pi", "subagents"));
+    const ws = store.open("scout-timeout");
+    expect(ws.readOutput()).toContain("timed out");
   }, 10000);
 
   it("completes normally when pi finishes before timeout", async () => {
@@ -585,13 +576,14 @@ exit 0
     // Verify no more callbacks after this
     const finalCount = progressCalls.length;
 
-    // Append an event to progress.jsonl AFTER subagent finished
-    const taskDir = join(workDir, ".pi", "subagents", "scout-finish");
-    appendFileSync(
-      join(taskDir, "progress.jsonl"),
-      JSON.stringify({ type: "lifecycle", text: "post-finish event", timestamp: "2026-01-01T00:00:10Z", status: "completed" }) + "\n",
-      "utf-8",
-    );
+    // Append an event to progress.jsonl AFTER subagent finished (via workspace API)
+    const store = new WorkspaceStore(join(workDir, ".pi", "subagents"));
+    store.open("scout-finish").appendEvent({
+      type: "lifecycle",
+      text: "post-finish event",
+      timestamp: "2026-01-01T00:00:10Z",
+      status: "completed",
+    });
 
     await new Promise((r) => setTimeout(r, 150));
     expect(progressCalls.length).toBe(finalCount);
@@ -640,12 +632,14 @@ exit 0
     // No callbacks after this point
     const finalCount = progressCalls.length;
 
-    const taskDir = join(workDir, ".pi", "subagents", "scout-timeout-progress");
-    appendFileSync(
-      join(taskDir, "progress.jsonl"),
-      JSON.stringify({ type: "lifecycle", text: "post-timeout event", timestamp: "2026-01-01T00:00:10Z", status: "completed" }) + "\n",
-      "utf-8",
-    );
+    // Append an event to progress.jsonl AFTER subagent timed out (via workspace API)
+    const store = new WorkspaceStore(join(workDir, ".pi", "subagents"));
+    store.open("scout-timeout-progress").appendEvent({
+      type: "lifecycle",
+      text: "post-timeout event",
+      timestamp: "2026-01-01T00:00:10Z",
+      status: "completed",
+    });
 
     await new Promise((r) => setTimeout(r, 150));
     expect(progressCalls.length).toBe(finalCount);

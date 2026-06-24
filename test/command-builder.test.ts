@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { buildCommand } from "../src/command-builder";
 import type { AgentDefinition } from "../src/agent-definition-parser";
 
-const MANIFEST_PATH = "/tmp/manifest.json";
 
 function valueAfter(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
@@ -23,14 +22,13 @@ function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefiniti
 
 describe("buildCommand", () => {
   it("produces the basic structure with --mode json, --no-session, PI_SUBAGENT_CHILD, and task prompt", () => {
-    const result = buildCommand(makeDefinition(), "Find all .ts files", MANIFEST_PATH);
+    const result = buildCommand(makeDefinition(), "Find all .ts files");
 
     expect(result.args).toContain("--mode");
     expect(result.args).toContain("json");
     expect(result.args).toContain("--no-session");
     expect(result.args).toContain("-p");
     expect(valueAfter(result.args, "-p")).toBe("Find all .ts files");
-    expect(result.args).not.toContain(MANIFEST_PATH);
     expect(result.env.PI_SUBAGENT_CHILD).toBe("1");
   });
 
@@ -39,12 +37,10 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ systemPromptMode: "replace", systemPromptBody: "You are a worker" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).toContain("--system-prompt");
       expect(valueAfter(result.args, "--system-prompt")).toBe("You are a worker");
-      expect(result.args).not.toContain(MANIFEST_PATH);
       expect(result.args).not.toContain("--append-system-prompt");
     });
 
@@ -52,12 +48,10 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ systemPromptMode: "append", systemPromptBody: "Also: follow these rules" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).toContain("--append-system-prompt");
       expect(valueAfter(result.args, "--append-system-prompt")).toBe("Also: follow these rules");
-      expect(result.args).not.toContain(MANIFEST_PATH);
       expect(result.args).not.toContain("--system-prompt");
     });
 
@@ -65,7 +59,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ systemPromptBody: "" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).not.toContain("--system-prompt");
@@ -78,7 +71,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ tools: ["read", "grep", "find", "ls", "bash"] }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       const toolsIndex = result.args.indexOf("--tools");
@@ -87,7 +79,7 @@ describe("buildCommand", () => {
     });
 
     it("omits --tools when tools are not defined", () => {
-      const result = buildCommand(makeDefinition(), "Do stuff", MANIFEST_PATH);
+      const result = buildCommand(makeDefinition(), "Do stuff");
 
       expect(result.args).not.toContain("--tools");
     });
@@ -96,7 +88,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ tools: [] }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).not.toContain("--tools");
@@ -108,7 +99,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ model: "anthropic/claude-sonnet" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       const modelIndex = result.args.indexOf("--model");
@@ -120,7 +110,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ thinking: "high" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       const thinkingIndex = result.args.indexOf("--thinking");
@@ -132,7 +121,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ model: "anthropic/claude-sonnet", thinking: "high" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).toContain("--model");
@@ -143,7 +131,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ model: "openai/gpt-4" }),
         "Do stuff",
-        MANIFEST_PATH,
         { model: "anthropic/claude-opus" },
       );
 
@@ -155,7 +142,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ thinking: "low" }),
         "Do stuff",
-        MANIFEST_PATH,
         { thinking: "xhigh" },
       );
 
@@ -164,7 +150,7 @@ describe("buildCommand", () => {
     });
 
     it("omits --model and --thinking when neither definition nor override has them", () => {
-      const result = buildCommand(makeDefinition(), "Do stuff", MANIFEST_PATH);
+      const result = buildCommand(makeDefinition(), "Do stuff");
 
       expect(result.args).not.toContain("--model");
       expect(result.args).not.toContain("--thinking");
@@ -174,7 +160,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ thinking: "medium" }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).not.toContain("--model");
@@ -186,7 +171,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ model: "openai/gpt-4" }),
         "Do stuff",
-        MANIFEST_PATH,
         { model: "" },
       );
 
@@ -200,7 +184,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ inheritProjectContext: false }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).toContain("--no-context-files");
@@ -210,7 +193,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ inheritProjectContext: true }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).not.toContain("--no-context-files");
@@ -220,7 +202,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ inheritSkills: false }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).toContain("--no-skills");
@@ -230,7 +211,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ inheritSkills: true }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).not.toContain("--no-skills");
@@ -240,7 +220,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ inheritExtensions: false }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).toContain("--no-extensions");
@@ -250,7 +229,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ inheritExtensions: true }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(result.args).not.toContain("--no-extensions");
@@ -263,7 +241,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ systemPromptMode: "replace", systemPromptBody: body }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(valueAfter(result.args, "--system-prompt")).toBe(body);
@@ -274,7 +251,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ systemPromptMode: "replace", systemPromptBody: body }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(valueAfter(result.args, "--system-prompt")).toBe(body);
@@ -285,7 +261,6 @@ describe("buildCommand", () => {
       const result = buildCommand(
         makeDefinition({ systemPromptMode: "replace", systemPromptBody: body }),
         "Do stuff",
-        MANIFEST_PATH,
       );
 
       expect(valueAfter(result.args, "--system-prompt")).toBe(body);
@@ -293,7 +268,7 @@ describe("buildCommand", () => {
 
     it("preserves special characters in task argv", () => {
       const task = 'Task with "quotes", $vars, and \`backticks\`.';
-      const result = buildCommand(makeDefinition(), task, MANIFEST_PATH);
+      const result = buildCommand(makeDefinition(), task);
 
       expect(valueAfter(result.args, "-p")).toBe(task);
     });
@@ -313,7 +288,6 @@ describe("buildCommand", () => {
           inheritExtensions: false,
         }),
         "Review the code in src/",
-        MANIFEST_PATH,
       );
 
       // Always-present flags
@@ -325,7 +299,6 @@ describe("buildCommand", () => {
       // Task prompt
       expect(result.args).toContain("-p");
       expect(valueAfter(result.args, "-p")).toBe("Review the code in src/");
-      expect(result.args).not.toContain(MANIFEST_PATH);
 
       // System prompt
       expect(result.args).toContain("--system-prompt");
@@ -361,7 +334,6 @@ describe("buildCommand", () => {
           inheritExtensions: true,
         }),
         "Write a function",
-        MANIFEST_PATH,
         { model: "anthropic/claude-opus", thinking: "xhigh" },
       );
 
@@ -385,7 +357,7 @@ describe("buildCommand", () => {
     });
 
     it("omits system prompt and tools flags when not configured", () => {
-      const result = buildCommand(makeDefinition(), "Just a task", MANIFEST_PATH);
+      const result = buildCommand(makeDefinition(), "Just a task");
 
       expect(result.args).not.toContain("--system-prompt");
       expect(result.args).not.toContain("--append-system-prompt");

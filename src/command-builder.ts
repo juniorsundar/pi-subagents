@@ -13,7 +13,6 @@ export interface BuildCommandOverrides {
 export function buildCommand(
   definition: AgentDefinition,
   task: string,
-  _manifestPath: string,
   overrides?: BuildCommandOverrides,
 ): BuildCommandResult {
   const args: string[] = [

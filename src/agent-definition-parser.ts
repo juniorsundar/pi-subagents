@@ -14,10 +14,6 @@ export interface AgentDefinition {
   inheritSkills: boolean;
   inheritExtensions: boolean;
   timeout?: number;
-  output?: string;
-  defaultProgress?: boolean;
-  /** Unknown frontmatter fields preserved for passthrough. */
-  extra?: Record<string, unknown>;
 }
 
 export function parseAgentDefinition(markdownContent: string): AgentDefinition {
@@ -54,15 +50,18 @@ export function parseAgentDefinition(markdownContent: string): AgentDefinition {
     "inheritSkills",
     "inheritExtensions",
     "timeout",
-    "output",
-    "defaultProgress",
   ]);
 
-  const extra: Record<string, unknown> = {};
-  for (const key of Object.keys(frontmatter)) {
-    if (!KNOWN_KEYS.has(key)) {
-      extra[key] = frontmatter[key];
-    }
+  const unknownKeys = Object.keys(frontmatter).filter(
+    (key) => !KNOWN_KEYS.has(key)
+  );
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `Unknown agent definition frontmatter key: ${unknownKeys[0]}. ` +
+        "Agent definitions accept only known fields. " +
+        "Check for typos — recognized fields are: " +
+        Array.from(KNOWN_KEYS).join(", ") + "."
+    );
   }
 
   const toolsRaw = frontmatter.tools;
@@ -88,9 +87,6 @@ export function parseAgentDefinition(markdownContent: string): AgentDefinition {
     inheritSkills: (frontmatter.inheritSkills ?? true) as boolean,
     inheritExtensions: (frontmatter.inheritExtensions ?? true) as boolean,
     timeout: typeof frontmatter.timeout === "number" ? frontmatter.timeout : undefined,
-    output: frontmatter.output as string | undefined,
-    defaultProgress: frontmatter.defaultProgress as boolean | undefined,
-    ...(Object.keys(extra).length > 0 ? { extra } : {}),
   };
 }
 

@@ -1,4 +1,4 @@
-import type { ProgressEvent } from "./tail-progress";
+import type { ProgressEvent } from "./progress-event";
 import { summarizeToolArgs } from "./activity-feed-tool-formatting";
 
 export interface ActivityFeedLine {
@@ -178,7 +178,12 @@ function formatLineText(line: ActivityFeedLine): string {
   }
 
   const prefix = linePrefix(line);
-  return prefix ? `${prefix} ${line.text}` : line.text;
+  const text = prefix ? `${prefix} ${line.text}` : line.text;
+  if (line.type !== "tool" && !isToolBlock(line)) {
+    if (line.status === "succeeded") return `${text} ✓`;
+    if (line.status === "failed") return `${text} ✗`;
+  }
+  return text;
 }
 
 function isMergeableToolStart(line: ActivityFeedLine): boolean {
@@ -221,11 +226,13 @@ export function linePrefix(event: ActivityFeedLine): string {
   if (event.type === "usage") return "usage";
   if (event.type === "lifecycle") {
     if (event.status === "completed") return "done";
+    if (event.status === "succeeded") return "done";
     return "run";
   }
   if (event.type === "terminal") {
     if (event.status === "failed") return "fail";
     if (event.status === "completed") return "done";
+    if (event.status === "succeeded") return "done";
     return "term";
   }
   return "";

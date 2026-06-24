@@ -497,7 +497,7 @@ describe("formatActivityFeed — event categories", () => {
       "fail Tool bash failed",
       "say Scanning codebase.",
       "done Subagent completed",
-      "fail Subagent failed: missing agent_end",
+      "fail Subagent failed: missing agent_end ✗",
     ].join("\n"));
     expect(feed.collapsed.lines).toEqual(events);
   });
@@ -588,6 +588,70 @@ describe("formatActivityFeed — usage extraction", () => {
     const feed = formatActivityFeed(events);
 
     expect(feed.usage).toBeUndefined();
+  });
+});
+
+describe("formatActivityFeed — succeeded status for lifecycle and terminal", () => {
+  it("renders a lifecycle event with status 'succeeded' with 'done' prefix and checkmark", () => {
+    const events = [
+      {
+        type: "lifecycle" as const,
+        text: "Subagent completed",
+        timestamp: "2026-01-01T00:00:00Z",
+        status: "succeeded" as const,
+      },
+    ];
+
+    const feed = formatActivityFeed(events);
+
+    expect(feed.collapsed.text).toBe("done Subagent completed ✓");
+    expect(feed.expanded.text).toBe("done Subagent completed ✓");
+  });
+
+  it("renders a terminal event with status 'succeeded' with 'done' prefix and checkmark", () => {
+    const events = [
+      {
+        type: "terminal" as const,
+        text: "Subagent finished",
+        timestamp: "2026-01-01T00:00:00Z",
+        status: "succeeded" as const,
+      },
+    ];
+
+    const feed = formatActivityFeed(events);
+
+    expect(feed.collapsed.text).toBe("done Subagent finished ✓");
+    expect(feed.expanded.text).toBe("done Subagent finished ✓");
+  });
+
+  it("renders a lifecycle event with status 'failed' with 'run' prefix and cross mark", () => {
+    const events = [
+      {
+        type: "lifecycle" as const,
+        text: "Subagent crashed",
+        timestamp: "2026-01-01T00:00:00Z",
+        status: "failed" as const,
+      },
+    ];
+
+    const feed = formatActivityFeed(events);
+
+    expect(feed.collapsed.text).toBe("run Subagent crashed ✗");
+  });
+
+  it("renders a terminal event with status 'failed' with 'fail' prefix and cross mark", () => {
+    const events = [
+      {
+        type: "terminal" as const,
+        text: "Subagent failed",
+        timestamp: "2026-01-01T00:00:00Z",
+        status: "failed" as const,
+      },
+    ];
+
+    const feed = formatActivityFeed(events);
+
+    expect(feed.collapsed.text).toBe("fail Subagent failed ✗");
   });
 });
 

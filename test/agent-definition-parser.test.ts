@@ -73,8 +73,6 @@ inheritProjectContext: false
 inheritSkills: false
 inheritExtensions: false
 timeout: 120
-output: .pi/subagent-outputs/scout.md
-defaultProgress: true
 ---
 You are a scout agent.`;
 
@@ -90,29 +88,56 @@ You are a scout agent.`;
     expect(result.inheritSkills).toBe(false);
     expect(result.inheritExtensions).toBe(false);
     expect(result.timeout).toBe(120);
-    expect(result.output).toBe(".pi/subagent-outputs/scout.md");
-    expect(result.defaultProgress).toBe(true);
     expect(result.systemPromptBody).toBe("You are a scout agent.");
   });
 
-  it("preserves unknown frontmatter fields without error", () => {
+  it("rejects output as an unknown frontmatter key", () => {
     const input = `---
 name: test
-defaultReads: agents/context.md
-defaultContext: fork
+output: .pi/subagent-outputs/test.md
+---
+Body`;
+
+    expect(() => parseAgentDefinition(input)).toThrow(
+      /Unknown agent definition frontmatter key: output/i
+    );
+  });
+
+  it("rejects defaultProgress as an unknown frontmatter key", () => {
+    const input = `---
+name: test
+defaultProgress: true
+---
+Body`;
+
+    expect(() => parseAgentDefinition(input)).toThrow(
+      /Unknown agent definition frontmatter key: defaultProgress/i
+    );
+  });
+
+  it("rejects unknown frontmatter keys with a descriptive error", () => {
+    const input = `---
+name: test
 customField: some-value
 ---
 Test body.`;
 
-    const result = parseAgentDefinition(input);
+    expect(() => parseAgentDefinition(input)).toThrow(
+      /Unknown agent definition frontmatter key: customField/i
+    );
+  });
 
-    expect(result.name).toBe("test");
-    expect(result.extra).toBeDefined();
-    expect(result.extra).toEqual({
-      defaultReads: "agents/context.md",
-      defaultContext: "fork",
-      customField: "some-value",
-    });
+  it("rejects multiple unknown frontmatter keys", () => {
+    const input = `---
+name: test
+foo: 1
+bar: 2
+---
+Body`;
+
+    expect(() => parseAgentDefinition(input)).toThrow(
+      /Unknown agent definition frontmatter key: (foo|bar)/i
+    );
   });
 
   it("parses an agent definition with no markdown body (empty system prompt)", () => {
